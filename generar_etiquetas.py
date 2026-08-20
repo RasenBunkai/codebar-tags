@@ -2,22 +2,36 @@
 # -*- coding: utf-8 -*-
 
 """
-Generador de etiquetas para inventario:
+Generador de etiquetas para inventario.
+
+Formato del identificador:
+    NUMERO_DE_SERIE-CONSECUTIVO
+
+Ejemplos:
+    PF306BAC-001
+    T6NXLP00W46323C-002
+
+Características:
 - Hoja personalizada: 220 x 152 mm
 - Etiquetas: 63 x 32 mm
 - 3 columnas x 4 filas = 12 etiquetas por hoja
 - Separación: 6 mm horizontal y vertical
-- Por cada equipo genera:
-    CHROMEBOOK -> NUMERO_DE_SERIE
-    CARGADOR   -> NUMERO_DE_SERIE-C
-- Código de barras Code 128 real (no depende de una fuente Code_128).
+- Código de barras Code 128 real
+- Consecutivo automático de 3 dígitos
 
 Instalación:
     py -m pip install reportlab
 
 Uso:
     py generar_etiquetas.py seriales.txt
+
+Generar con guías:
     py generar_etiquetas.py seriales.txt --guias
+
+Empezar el consecutivo desde otro número:
+    py generar_etiquetas.py seriales.txt --inicio 25
+
+Archivo de salida personalizado:
     py generar_etiquetas.py seriales.txt -o etiquetas.pdf
 
 IMPORTANTE AL IMPRIMIR:
@@ -49,117 +63,236 @@ GAP_Y = 6 * mm
 
 COLS = 3
 ROWS = 4
+ETIQUETAS_POR_HOJA = COLS * ROWS
 
-# Verticalmente las medidas dadas cuadran exactamente:
-# 3 + (4*32) + (3*6) + 3 = 152 mm
+# Vertical:
+# 3 + (4 × 32) + (3 × 6) + 3 = 152 mm
 TOP_MARGIN = 3 * mm
 
-# Horizontalmente:
-# (3*63) + (2*6) = 201 mm
-# 220 - 201 = 19 mm -> 9.5 mm por lado si centramos la cuadrícula.
-#
-# Tú mediste aproximadamente 8 mm por lado. Para la primera prueba
-# conviene centrar la cuadrícula y, si hace falta, ajustar GRID_LEFT
-# después de imprimir la hoja de prueba.
+# Horizontal:
+# (3 × 63) + (2 × 6) = 201 mm
+# 220 - 201 = 19 mm
+# Centrado = 9.5 mm por lado
 GRID_W = COLS * LABEL_W + (COLS - 1) * GAP_X
-GRID_LEFT = (PAGE_W - GRID_W) / 2  # 9.5 mm
+GRID_LEFT = (PAGE_W - GRID_W) / 2
 
 
 # ---------------------------------------------------------------------
-# DISEÑO DE LA ETIQUETA
+# DISEÑO DEL CÓDIGO DE BARRAS
 # ---------------------------------------------------------------------
 
-BAR_WIDTH = 0.23 * mm       # módulo X; adecuado para estos seriales
-BAR_HEIGHT = 11.5 * mm
-BAR_QUIET = 10 * BAR_WIDTH  # quiet zone >= 10X a cada lado
+# Se usa 0.22 mm para permitir identificadores largos
+# como T6NXLP00W46323C-001 dentro de 63 mm.
+BAR_WIDTH = 0.22 * mm
+BAR_HEIGHT = 14 * mm
 
-TITLE_SIZE = 8.5
-SERIAL_SIZE_SHORT = 9.5
-SERIAL_SIZE_LONG = 8.0
+# Zona silenciosa mínima a ambos lados
+BAR_QUIET = 10 * BAR_WIDTH
 
+SERIAL_SIZE_SHORT = 10
+SERIAL_SIZE_LONG = 8
+CONSECUTIVO_MINIMO = 1
+CONSECUTIVO_MAXIMO = 999
+
+
+# ---------------------------------------------------------------------
+# LECTURA DE SERIALES
+# ---------------------------------------------------------------------
 
 def leer_seriales(ruta: Path) -> list[str]:
+
     if not ruta.exists():
-        raise FileNotFoundError(f"No existe el archivo: {ruta}")
+        raise FileNotFoundError(
+            f"No existe el archivo: {ruta}"
+        )
 
     seriales = []
     vistos = set()
 
-    for num_linea, linea in enumerate(ruta.read_text(encoding="utf-8-sig").splitlines(), start=1):
+    lineas = ruta.read_text(
+        encoding="utf-8-sig"
+    ).splitlines()
+
+    for num_linea, linea in enumerate(lineas, start=1):
+
         serial = linea.strip()
 
         if not serial:
             continue
 
-        # Evitamos espacios dentro del identificador por accidente.
+        # Evitar espacios accidentales
         if any(ch.isspace() for ch in serial):
+
             raise ValueError(
-                f"Línea {num_linea}: el número de serie contiene espacios: {serial!r}"
+                f"Linea {num_linea}: "
+                f"el numero de serie contiene espacios: {serial!r}"
             )
 
-        # Code 128 puede representar ASCII; para inventario mantenemos
-        # el valor tal como fue escrito.
+        # Evitar duplicados
         if serial in vistos:
+
             print(
-                f"Advertencia: el serial {serial!r} aparece repetido; "
-                "se generará una sola pareja de etiquetas.",
+                f"Advertencia: el serial {serial!r} esta repetido. "
+                "Se ignorara la segunda aparicion.",
                 file=sys.stderr,
             )
+
             continue
 
         vistos.add(serial)
         seriales.append(serial)
 
     if not seriales:
-        raise ValueError("El archivo no contiene números de serie.")
+        raise ValueError(
+            "El archivo no contiene numeros de serie."
+        )
 
     return seriales
 
 
-def posicion_etiqueta(fila: int, columna: int) -> tuple[float, float]:
+# ---------------------------------------------------------------------
+# POSICIÓN DE LAS ETIQUETAS
+# ---------------------------------------------------------------------
+
+def posicion_etiqueta(
+    fila: int,
+    columna: int
+) -> tuple[float, float]:
+
     """
-    Devuelve la esquina inferior izquierda de una etiqueta.
-    Las filas se numeran visualmente de arriba hacia abajo.
+    Devuelve la esquina inferior izquierda
+    de cada etiqueta.
+
+    Las filas se numeran visualmente
+    de arriba hacia abajo.
     """
-    x = GRID_LEFT + columna * (LABEL_W + GAP_X)
-    y = PAGE_H - TOP_MARGIN - LABEL_H - fila * (LABEL_H + GAP_Y)
+
+    x = (
+        GRID_LEFT
+        + columna * (LABEL_W + GAP_X)
+    )
+
+    y = (
+        PAGE_H
+        - TOP_MARGIN
+        - LABEL_H
+        - fila * (LABEL_H + GAP_Y)
+    )
+
     return x, y
 
 
+# ---------------------------------------------------------------------
+# GUÍAS DE CALIBRACIÓN
+# ---------------------------------------------------------------------
+
 def dibujar_guias(c: canvas.Canvas):
-    """Dibuja contornos para calibrar la impresión."""
+
     c.saveState()
+
     c.setLineWidth(0.25)
     c.setDash(1, 1)
 
     for fila in range(ROWS):
+
         for columna in range(COLS):
-            x, y = posicion_etiqueta(fila, columna)
-            c.rect(x, y, LABEL_W, LABEL_H, stroke=1, fill=0)
+
+            x, y = posicion_etiqueta(
+                fila,
+                columna
+            )
+
+            c.rect(
+                x,
+                y,
+                LABEL_W,
+                LABEL_H,
+                stroke=1,
+                fill=0
+            )
 
     c.restoreState()
 
 
-def tamano_serial(texto: str) -> float:
-    return SERIAL_SIZE_SHORT if len(texto) <= 12 else SERIAL_SIZE_LONG
+# ---------------------------------------------------------------------
+# TAMAÑO DEL TEXTO
+# ---------------------------------------------------------------------
 
+def tamano_identificador(texto: str) -> float:
+
+    if len(texto) <= 15:
+        return SERIAL_SIZE_SHORT
+
+    return SERIAL_SIZE_LONG
+
+
+# ---------------------------------------------------------------------
+# IDENTIFICADORES
+# ---------------------------------------------------------------------
+
+def validar_inicio(inicio: int):
+
+    if inicio < CONSECUTIVO_MINIMO:
+        raise ValueError(
+            "--inicio debe ser mayor o igual a 1."
+        )
+
+    if inicio > CONSECUTIVO_MAXIMO:
+        raise ValueError(
+            "--inicio no puede ser mayor a 999."
+        )
+
+
+def formatear_identificador(
+    serial: str,
+    consecutivo: int
+) -> str:
+
+    if consecutivo > CONSECUTIVO_MAXIMO:
+        raise ValueError(
+            "El consecutivo maximo soportado es 999. "
+            "Divide el archivo en varios lotes o usa menos seriales."
+        )
+
+    return f"{serial}-{consecutivo:03d}"
+
+
+def crear_registros(
+    seriales: list[str],
+    inicio: int
+) -> list[tuple[str, int]]:
+
+    validar_inicio(inicio)
+
+    ultimo = inicio + len(seriales) - 1
+
+    if ultimo > CONSECUTIVO_MAXIMO:
+        raise ValueError(
+            f"El lote llega hasta {ultimo:03d}, "
+            "pero el consecutivo maximo soportado es 999."
+        )
+
+    return [
+        (serial, inicio + indice)
+        for indice, serial in enumerate(seriales)
+    ]
+
+
+# ---------------------------------------------------------------------
+# DIBUJAR UNA ETIQUETA
+# ---------------------------------------------------------------------
 
 def dibujar_etiqueta(
     c: canvas.Canvas,
     x: float,
     y: float,
-    tipo: str,
     identificador: str,
 ):
-    # Título
-    c.setFont("Helvetica-Bold", TITLE_SIZE)
-    c.drawCentredString(
-        x + LABEL_W / 2,
-        y + LABEL_H - 5.0 * mm,
-        tipo,
-    )
 
-    # Code 128 real.
+    # -------------------------------------------------------------
+    # CODE 128
+    # -------------------------------------------------------------
+
     barcode = Code128(
         identificador,
         barWidth=BAR_WIDTH,
@@ -170,110 +303,250 @@ def dibujar_etiqueta(
         rquiet=BAR_QUIET,
     )
 
-    # Comprobación de seguridad para no desbordar la etiqueta.
+    # Dejamos 2 mm de seguridad en cada lado.
     max_barcode_w = LABEL_W - 4 * mm
+
     if barcode.width > max_barcode_w:
+
         raise ValueError(
-            f"El código {identificador!r} ocupa {barcode.width/mm:.1f} mm "
-            f"y excede el ancho disponible de {max_barcode_w/mm:.1f} mm."
+            f"El codigo {identificador!r} ocupa "
+            f"{barcode.width / mm:.1f} mm y excede "
+            f"el ancho disponible de "
+            f"{max_barcode_w / mm:.1f} mm."
         )
 
-    barcode_x = x + (LABEL_W - barcode.width) / 2
-    barcode_y = y + 9.0 * mm
-    barcode.drawOn(c, barcode_x, barcode_y)
+    # Centrar horizontalmente
+    barcode_x = (
+        x
+        + (LABEL_W - barcode.width) / 2
+    )
 
-    # Texto legible debajo del código.
-    c.setFont("Helvetica-Bold", tamano_serial(identificador))
+    # Posición vertical
+    barcode_y = y + 11 * mm
+
+    barcode.drawOn(
+        c,
+        barcode_x,
+        barcode_y
+    )
+
+    # -------------------------------------------------------------
+    # TEXTO DEL IDENTIFICADOR
+    # -------------------------------------------------------------
+
+    c.setFont(
+        "Helvetica-Bold",
+        tamano_identificador(identificador)
+    )
+
     c.drawCentredString(
         x + LABEL_W / 2,
-        y + 4.1 * mm,
+        y + 5.5 * mm,
         identificador,
     )
 
 
-def dibujar_pagina(c: canvas.Canvas, grupo: list[str], guias: bool):
-    """
-    Cada hoja admite 6 equipos = 12 etiquetas.
+# ---------------------------------------------------------------------
+# DIBUJAR UNA PÁGINA
+# ---------------------------------------------------------------------
 
-    Distribución:
-        fila 1: Chromebook equipo 1 | Chromebook equipo 2 | Chromebook equipo 3
-        fila 2: Cargador   equipo 1 | Cargador   equipo 2 | Cargador   equipo 3
+def dibujar_pagina(
+    c: canvas.Canvas,
+    grupo: list[tuple[str, int]],
+    guias: bool
+):
 
-        fila 3: Chromebook equipo 4 | Chromebook equipo 5 | Chromebook equipo 6
-        fila 4: Cargador   equipo 4 | Cargador   equipo 5 | Cargador   equipo 6
-
-    Así la etiqueta del cargador queda justo debajo de la de su Chromebook.
-    """
     if guias:
         dibujar_guias(c)
 
-    for i, serial in enumerate(grupo):
-        bloque = 0 if i < 3 else 1
-        columna = i % 3
+    for posicion, (serial, consecutivo) in enumerate(grupo):
 
-        fila_chromebook = bloque * 2
-        fila_cargador = fila_chromebook + 1
+        fila = posicion // COLS
+        columna = posicion % COLS
 
-        x_ch, y_ch = posicion_etiqueta(fila_chromebook, columna)
-        dibujar_etiqueta(c, x_ch, y_ch, "CHROMEBOOK", serial)
+        x, y = posicion_etiqueta(
+            fila,
+            columna
+        )
 
-        x_ca, y_ca = posicion_etiqueta(fila_cargador, columna)
-        dibujar_etiqueta(c, x_ca, y_ca, "CARGADOR", f"{serial}-C")
+        identificador = formatear_identificador(
+            serial,
+            consecutivo
+        )
+
+        dibujar_etiqueta(
+            c,
+            x,
+            y,
+            identificador
+        )
 
 
-def generar_pdf(seriales: list[str], salida: Path, guias: bool = False):
-    c = canvas.Canvas(str(salida), pagesize=(PAGE_W, PAGE_H))
-    c.setTitle("Etiquetas de inventario Code 128")
+# ---------------------------------------------------------------------
+# GENERAR PDF
+# ---------------------------------------------------------------------
 
-    EQUIPOS_POR_HOJA = 6
+def generar_pdf(
+    seriales: list[str],
+    salida: Path,
+    inicio: int = 1,
+    guias: bool = False
+):
 
-    for inicio in range(0, len(seriales), EQUIPOS_POR_HOJA):
-        grupo = seriales[inicio : inicio + EQUIPOS_POR_HOJA]
-        dibujar_pagina(c, grupo, guias=guias)
+    salida.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    c = canvas.Canvas(
+        str(salida),
+        pagesize=(PAGE_W, PAGE_H)
+    )
+
+    c.setTitle(
+        "Etiquetas de inventario Code 128"
+    )
+
+    registros = crear_registros(
+        seriales,
+        inicio
+    )
+
+    for inicio_pagina in range(
+        0,
+        len(registros),
+        ETIQUETAS_POR_HOJA
+    ):
+
+        grupo = registros[
+            inicio_pagina:
+            inicio_pagina + ETIQUETAS_POR_HOJA
+        ]
+
+        dibujar_pagina(
+            c,
+            grupo,
+            guias
+        )
+
         c.showPage()
 
     c.save()
 
 
+# ---------------------------------------------------------------------
+# PROGRAMA PRINCIPAL
+# ---------------------------------------------------------------------
+
 def main():
+
     parser = argparse.ArgumentParser(
-        description="Genera etiquetas Code 128 para Chromebook y cargador."
+        description=(
+            "Genera etiquetas Code 128 "
+            "con numero de serie y consecutivo."
+        )
     )
+
     parser.add_argument(
         "archivo",
         nargs="?",
         default="seriales.txt",
-        help="TXT con un número de serie por línea (default: seriales.txt)",
+        help=(
+            "TXT con un numero de serie por linea "
+            "(default: seriales.txt)"
+        ),
     )
+
     parser.add_argument(
         "-o",
         "--salida",
         default="etiquetas.pdf",
-        help="Nombre del PDF de salida (default: etiquetas.pdf)",
+        help=(
+            "Nombre del PDF de salida "
+            "(default: etiquetas.pdf)"
+        ),
     )
+
+    parser.add_argument(
+        "--inicio",
+        type=int,
+        default=1,
+        help=(
+            "Numero inicial del consecutivo "
+            "(default: 1)"
+        ),
+    )
+
     parser.add_argument(
         "--guias",
         action="store_true",
-        help="Dibuja el contorno de las 12 etiquetas para calibración.",
+        help=(
+            "Dibuja el contorno de las "
+            "12 etiquetas para calibracion."
+        ),
     )
+
     args = parser.parse_args()
 
     entrada = Path(args.archivo)
     salida = Path(args.salida)
 
     try:
-        seriales = leer_seriales(entrada)
-        generar_pdf(seriales, salida, guias=args.guias)
+
+        seriales = leer_seriales(
+            entrada
+        )
+
+        generar_pdf(
+            seriales,
+            salida,
+            inicio=args.inicio,
+            guias=args.guias
+        )
+
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr
+        )
+
         return 1
 
-    paginas = (len(seriales) + 5) // 6
-    print(f"PDF generado: {salida.resolve()}")
-    print(f"Equipos: {len(seriales)}")
-    print(f"Etiquetas: {len(seriales) * 2}")
-    print(f"Páginas: {paginas}")
-    print("Imprime al 100 % / Tamaño real, sin ajuste de página.")
+    paginas = (
+        len(seriales) + 11
+    ) // 12
+
+    ultimo = (
+        args.inicio
+        + len(seriales)
+        - 1
+    )
+
+    print()
+    print(
+        f"PDF generado: {salida.resolve()}"
+    )
+
+    print(
+        f"Etiquetas: {len(seriales)}"
+    )
+
+    print(
+        f"Paginas: {paginas}"
+    )
+
+    print(
+        f"Consecutivos: "
+        f"{args.inicio:03d} - {ultimo:03d}"
+    )
+
+    print()
+    print(
+        "Imprime al 100 % / Tamano real, "
+        "sin ajuste de pagina."
+    )
+
     return 0
 
 
